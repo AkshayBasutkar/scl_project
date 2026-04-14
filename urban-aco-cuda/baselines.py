@@ -58,10 +58,11 @@ def dijkstra(
     graph: CSRGraph,
     source: int,
     destination: int,
-    w_tt: float = 0.30,
-    w_dist: float = 0.25,
+    w_tt: float = 0.25,
+    w_dist: float = 0.20,
     w_cong: float = 0.20,
     w_sig: float = 0.15,
+    w_cap: float = 0.10,
 ) -> BaselineResult:
     """
     Dijkstra's algorithm using the same composite cost function
@@ -95,11 +96,13 @@ def dijkstra(
             v = graph.col_idx[k]
             if v in visited:
                 continue
+            cap_val = max(float(graph.capacities[k]), 1.0)
             edge_cost = (
                 w_tt * graph.travel_times[k]
                 + w_dist * graph.distances[k]
                 + w_cong * graph.congestions[k]
                 + w_sig * graph.signal_delays[k]
+                + w_cap * (1000.0 / cap_val)
             )
             alt = d_u + edge_cost
             if alt < dist[v]:
@@ -171,11 +174,11 @@ def cpu_aco(
         routes, route_lengths, route_costs = cpu_construct_routes(
             graph.row_ptr, graph.col_idx,
             graph.travel_times, graph.distances,
-            graph.congestions, graph.signal_delays,
+            graph.congestions, graph.signal_delays, graph.capacities,
             graph.pheromones,
             cfg.alpha, cfg.beta,
             cfg.w_travel_time, cfg.w_distance,
-            cfg.w_congestion, cfg.w_signal_delay,
+            cfg.w_congestion, cfg.w_signal_delay, cfg.w_capacity,
             num_ants, graph.num_nodes, source, destination,
             cfg.max_path_length, rng,
         )
@@ -270,7 +273,7 @@ def gpu_aco_baseline(
             cfg.max_path_length,
             cfg.alpha, cfg.beta,
             cfg.w_travel_time, cfg.w_distance,
-            cfg.w_congestion, cfg.w_signal_delay,
+            cfg.w_congestion, cfg.w_signal_delay, cfg.w_capacity,
             rng,
         )
 

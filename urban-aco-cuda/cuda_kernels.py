@@ -51,10 +51,11 @@ if NUMBA_CUDA_AVAILABLE:
         distances,        # float32[num_edges]
         congestions,      # float32[num_edges]
         signal_delays,    # float32[num_edges]
+        capacities,       # float32[num_edges]
         pheromones,       # float32[num_edges]
         alpha,            # float32 scalar
         beta,             # float32 scalar
-        w_tt, w_dist, w_cong, w_sig,  # float32 weight scalars
+        w_tt, w_dist, w_cong, w_sig, w_cap,  # float32 weight scalars
         random_vals,      # float32[num_ants, max_path_length]
         routes,           # int32[num_ants, max_path_length]
         route_lengths,    # int32[num_ants]
@@ -120,12 +121,16 @@ if NUMBA_CUDA_AVAILABLE:
                 if visited:
                     continue
 
-                # Composite edge cost
+                # Composite edge cost (5-objective)
+                cap_val = capacities[k]
+                if cap_val < 1.0:
+                    cap_val = 1.0
                 edge_cost = (
                     w_tt * travel_times[k]
                     + w_dist * distances[k]
                     + w_cong * congestions[k]
                     + w_sig * signal_delays[k]
+                    + w_cap * (1000.0 / cap_val)
                 )
                 if edge_cost < 1e-8:
                     edge_cost = 1e-8
@@ -156,11 +161,15 @@ if NUMBA_CUDA_AVAILABLE:
                 if visited:
                     continue
 
+                cap_val = capacities[k]
+                if cap_val < 1.0:
+                    cap_val = 1.0
                 edge_cost = (
                     w_tt * travel_times[k]
                     + w_dist * distances[k]
                     + w_cong * congestions[k]
                     + w_sig * signal_delays[k]
+                    + w_cap * (1000.0 / cap_val)
                 )
                 if edge_cost < 1e-8:
                     edge_cost = 1e-8
@@ -196,11 +205,15 @@ if NUMBA_CUDA_AVAILABLE:
             # Move to selected neighbour
             routes[ant_id, path_len] = selected_nb
             # Accumulate cost
+            cap_val = capacities[selected_edge]
+            if cap_val < 1.0:
+                cap_val = 1.0
             edge_cost = (
                 w_tt * travel_times[selected_edge]
                 + w_dist * distances[selected_edge]
                 + w_cong * congestions[selected_edge]
                 + w_sig * signal_delays[selected_edge]
+                + w_cap * (1000.0 / cap_val)
             )
             total_cost += edge_cost
             current = selected_nb
@@ -219,8 +232,8 @@ if NUMBA_CUDA_AVAILABLE:
     @cuda.jit
     def route_scoring_kernel(
         row_ptr, col_idx,
-        travel_times, distances, congestions, signal_delays,
-        w_tt, w_dist, w_cong, w_sig,
+        travel_times, distances, congestions, signal_delays, capacities,
+        w_tt, w_dist, w_cong, w_sig, w_cap,
         routes, route_lengths, route_costs,
         num_nodes,
     ):
@@ -243,11 +256,15 @@ if NUMBA_CUDA_AVAILABLE:
             end = row_ptr[u + 1]
             for k in range(start, end):
                 if col_idx[k] == v:
+                    cap_val = capacities[k]
+                    if cap_val < 1.0:
+                        cap_val = 1.0
                     total += (
                         w_tt * travel_times[k]
                         + w_dist * distances[k]
                         + w_cong * congestions[k]
                         + w_sig * signal_delays[k]
+                        + w_cap * (1000.0 / cap_val)
                     )
                     break
         route_costs[ant_id] = total
@@ -345,10 +362,10 @@ if NUMBA_CUDA_AVAILABLE:
 
 def cpu_construct_routes(
     row_ptr, col_idx,
-    travel_times, distances, congestions, signal_delays,
+    travel_times, distances, congestions, signal_delays, capacities,
     pheromones,
     alpha, beta,
-    w_tt, w_dist, w_cong, w_sig,
+    w_tt, w_dist, w_cong, w_sig, w_cap,
     num_ants, num_nodes, source, destination, max_path_len,
     rng=None,
 ):
@@ -382,11 +399,13 @@ def cpu_construct_routes(
                 nb = col_idx[k]
                 if nb in visited:
                     continue
+                cap_val = max(float(capacities[k]), 1.0)
                 edge_cost = (
                     w_tt * travel_times[k]
                     + w_dist * distances[k]
                     + w_cong * congestions[k]
                     + w_sig * signal_delays[k]
+                    + w_cap * (1000.0 / cap_val)
                 )
                 edge_cost = max(edge_cost, 1e-8)
                 heuristic = 1.0 / edge_cost
@@ -406,11 +425,13 @@ def cpu_construct_routes(
             edge_k, selected_nb = candidates[choice_idx]
 
             routes[ant, path_len] = selected_nb
+            cap_val = max(float(capacities[edge_k]), 1.0)
             edge_cost = (
                 w_tt * travel_times[edge_k]
                 + w_dist * distances[edge_k]
                 + w_cong * congestions[edge_k]
                 + w_sig * signal_delays[edge_k]
+                + w_cap * (1000.0 / cap_val)
             )
             total_cost += edge_cost
             visited.add(selected_nb)
@@ -481,6 +502,7 @@ class CUDAEngine:
         self._d_distances = None
         self._d_congestions = None
         self._d_signal_delays = None
+        self._d_capacities = None
         self._d_pheromones = None
         self._graph_uploaded = False
 
@@ -497,6 +519,7 @@ class CUDAEngine:
         self._d_distances = cuda.to_device(graph.distances)
         self._d_congestions = cuda.to_device(graph.congestions)
         self._d_signal_delays = cuda.to_device(graph.signal_delays)
+        self._d_capacities = cuda.to_device(graph.capacities)
         self._d_pheromones = cuda.to_device(graph.pheromones)
         self._graph_uploaded = True
         logger.debug("Graph uploaded to GPU.")
@@ -518,7 +541,7 @@ class CUDAEngine:
     # ----------------------------------------------------------
     def construct_routes(
         self, graph, num_ants, source, destination, max_path_len,
-        alpha, beta, w_tt, w_dist, w_cong, w_sig, rng=None,
+        alpha, beta, w_tt, w_dist, w_cong, w_sig, w_cap, rng=None,
     ):
         """
         Returns (routes, route_lengths, route_costs) as NumPy arrays.
@@ -529,22 +552,23 @@ class CUDAEngine:
         if self.use_cuda and self._graph_uploaded:
             return self._gpu_construct(
                 graph, num_ants, source, destination, max_path_len,
-                alpha, beta, w_tt, w_dist, w_cong, w_sig, rng,
+                alpha, beta, w_tt, w_dist, w_cong, w_sig, w_cap, rng,
             )
         else:
             return cpu_construct_routes(
                 graph.row_ptr, graph.col_idx,
                 graph.travel_times, graph.distances,
-                graph.congestions, graph.signal_delays, graph.pheromones,
-                alpha, beta, w_tt, w_dist, w_cong, w_sig,
+                graph.congestions, graph.signal_delays, graph.capacities,
+                graph.pheromones,
+                alpha, beta, w_tt, w_dist, w_cong, w_sig, w_cap,
                 num_ants, graph.num_nodes, source, destination,
                 max_path_len, rng,
             )
 
     def _gpu_construct(self, graph, num_ants, source, destination,
                        max_path_len, alpha, beta, w_tt, w_dist,
-                       w_cong, w_sig, rng):
-        # Pre-generate random values on CPU → transfer to GPU
+                       w_cong, w_sig, w_cap, rng):
+        # Pre-generate random values on CPU -> transfer to GPU
         random_vals = rng.random((num_ants, max_path_len)).astype(np.float32)
         d_random = cuda.to_device(random_vals)
 
@@ -563,10 +587,11 @@ class CUDAEngine:
             self._d_row_ptr, self._d_col_idx,
             self._d_travel_times, self._d_distances,
             self._d_congestions, self._d_signal_delays,
+            self._d_capacities,
             self._d_pheromones,
             np.float32(alpha), np.float32(beta),
             np.float32(w_tt), np.float32(w_dist),
-            np.float32(w_cong), np.float32(w_sig),
+            np.float32(w_cong), np.float32(w_sig), np.float32(w_cap),
             d_random,
             d_routes, d_rlens, d_rcosts,
             np.int32(graph.num_nodes),

@@ -117,7 +117,7 @@ class DynamicMultiObjectiveACO:
                 cfg.max_path_length,
                 cfg.alpha, cfg.beta,
                 cfg.w_travel_time, cfg.w_distance,
-                cfg.w_congestion, cfg.w_signal_delay,
+                cfg.w_congestion, cfg.w_signal_delay, cfg.w_capacity,
                 self.rng,
             )
 

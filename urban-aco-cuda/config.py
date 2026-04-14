@@ -36,10 +36,11 @@ class ACOConfig:
     q_deposit: float = 100.0  # pheromone deposit constant Q
 
     # ── Multi-objective cost weights ─────────────────────────
-    w_travel_time: float = 0.30
-    w_distance: float = 0.25
+    w_travel_time: float = 0.25
+    w_distance: float = 0.20
     w_congestion: float = 0.20
     w_signal_delay: float = 0.15
+    w_capacity: float = 0.10       # inverse capacity penalty
     w_pheromone_bonus: float = 0.10
 
     # ── Adaptive behaviour ───────────────────────────────────

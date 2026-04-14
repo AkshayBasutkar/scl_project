@@ -2,6 +2,7 @@ import argparse
 import sys
 import logging
 import os
+import numpy as np
 
 from config import ACOConfig
 from utils import setup_logging, check_cuda_available, ensure_dirs, timed, set_seed
@@ -99,7 +100,7 @@ def main():
     logger.info("\n--- Running Dijkstra ---")
     res_dijkstra = dijkstra(
         csr_graph, cfg.source_node, cfg.destination_node,
-        cfg.w_travel_time, cfg.w_distance, cfg.w_congestion, cfg.w_signal_delay
+        cfg.w_travel_time, cfg.w_distance, cfg.w_congestion, cfg.w_signal_delay, cfg.w_capacity
     )
     results_dict["Dijkstra"] = res_dijkstra.to_dict()
     routes_dict["Dijkstra"] = res_dijkstra.best_route
@@ -153,8 +154,85 @@ def main():
     plot_cost_comparison(results_dict, os.path.join(cfg.plots_dir, "cost_comparison.png"))
     plot_speedup(results_dict, reference_key="CPU-ACO", save_path=os.path.join(cfg.plots_dir, "speedup.png"))
     plot_route_on_grid(nodes_df, routes_dict, os.path.join(cfg.plots_dir, "route_map.png"))
+
+    # ══════════════════════════════════════════════════════════
+    # 6. Traffic Scenario Experiments (low / normal / peak)
+    # ══════════════════════════════════════════════════════════
+    logger.info("\n" + "=" * 50)
+    logger.info("  TRAFFIC SCENARIO EXPERIMENTS")
+    logger.info("=" * 50)
+
+    import copy
+    scenario_results = []
+    traffic_scenarios = {
+        "Low Traffic":   0.15,   # avg congestion ~0.15
+        "Normal Traffic": 0.45,  # avg congestion ~0.45
+        "Peak Traffic":  0.85,   # avg congestion ~0.85
+    }
+
+    # Save original congestion
+    original_congestion = csr_graph.congestions.copy()
+
+    for scenario_name, cong_level in traffic_scenarios.items():
+        logger.info(f"\n--- Scenario: {scenario_name} (congestion ~{cong_level}) ---")
+        
+        # Set congestion to scenario level with small variance
+        rng_scenario = np.random.RandomState(cfg.random_seed)
+        csr_graph.congestions[:] = np.clip(
+            rng_scenario.normal(cong_level, 0.1, size=csr_graph.num_edges),
+            0.0, 1.0
+        ).astype(np.float32)
+
+        # Run DM-CUDA-ACO under this scenario
+        scenario_aco = DynamicMultiObjectiveACO(csr_graph, cfg)
+        res_scenario = scenario_aco.solve(cfg.source_node, cfg.destination_node)
+        
+        # Run Dijkstra under this scenario for reference
+        res_dij = dijkstra(
+            csr_graph, cfg.source_node, cfg.destination_node,
+            cfg.w_travel_time, cfg.w_distance, cfg.w_congestion, cfg.w_signal_delay, cfg.w_capacity
+        )
+
+        scenario_results.append({
+            "Scenario": scenario_name,
+            "Congestion Level": cong_level,
+            "Dijkstra Cost": round(res_dij.best_cost, 4),
+            "DM-CUDA-ACO Cost": round(res_scenario.best_cost, 4),
+            "ACO Travel Time": round(res_scenario.best_travel_time, 2),
+            "ACO Distance": round(res_scenario.best_distance, 2),
+            "ACO Runtime (ms)": round(res_scenario.runtime_ms, 1),
+            "ACO Path Length": len(res_scenario.best_route),
+            "Iterations": res_scenario.iterations_run,
+        })
+
+    # Restore original congestion
+    csr_graph.congestions[:] = original_congestion
+
+    # Print & save traffic scenario results
+    import pandas as pd
+    df_scenarios = pd.DataFrame(scenario_results)
+    print("\n" + "=" * 90)
+    print("  TRAFFIC SCENARIO RESULTS")
+    print("=" * 90)
+    print(df_scenarios.to_string(index=False))
+    print("=" * 90)
+    save_results_csv(df_scenarios, os.path.join(cfg.output_dir, "traffic_scenarios.csv"))
+
+    # Plot: Cost vs Congestion Level
+    from visualization import plot_parameter_sweep
+    cong_levels = [s["Congestion Level"] for s in scenario_results]
+    plot_parameter_sweep(
+        cong_levels,
+        {
+            "Dijkstra": [s["Dijkstra Cost"] for s in scenario_results],
+            "DM-CUDA-ACO": [s["DM-CUDA-ACO Cost"] for s in scenario_results],
+        },
+        "Congestion Level", "Best Route Cost",
+        "Route Cost vs Traffic Congestion Level",
+        os.path.join(cfg.plots_dir, "cost_vs_congestion.png"),
+    )
     
-    logger.info("\nExperiments Complete! Results are in /outputs and /plots.")
+    logger.info("\nAll Experiments Complete! Results are in /outputs and /plots.")
 
 if __name__ == "__main__":
     main()
