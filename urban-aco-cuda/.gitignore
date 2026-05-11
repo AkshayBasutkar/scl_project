@@ -1,0 +1,35 @@
+# Ignore Python cache and environment
+__pycache__/
+venv/
+env/
+.venv/
+
+# Ignore Jupyter Notebook checkpoint files
+.ipynb_checkpoints/
+
+# Ignore virtual environment
+.venv/
+env/
+venv/
+
+# Ignore Numba CUDA cache
+.numba_cache/
+
+# Ignore build artifacts
+dist/
+build/
+*.egg-info/
+
+# Ignore IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
+
+# Ignore log files (optional - might be useful for debugging)
+*.log
+
